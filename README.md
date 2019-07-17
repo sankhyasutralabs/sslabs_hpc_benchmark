@@ -1,6 +1,7 @@
 # SankhyaSutra Labs HPC Benchmark Suite
 
 Description:
+============
 This benchmark runs simulates a system represented as a 3D grid with a 4x4
 matrix at each point of the grid. The grid is domain decomposed across MPI
 processes arranged in a 3D Cartesian MPI topology. The matrices on the grid
@@ -27,16 +28,21 @@ Walltime statistics are printed at the end of the tests for these kernels:
 The simulation time is the sum of times for Update+Sync+Scatter. The
 checkpoint time is the time for Write.
 
-NOTE: This code allocates around 4GB of memory by default for each MPI
-process. To modify the memory allocated, please modify the GRIDNX
+**NOTE**: This code allocates around 4GB of memory by default for each MPI
+process. To modify the memory allocated, please modify the `GRIDNX`
 parameter, whose default values is set to 200. Memory allocated
-increases in proportion to (GRIDNX)^3. So, for GRIDNX=400, 32GB memory
-will be allocated per MPI process.
+increases in proportion to (`GRIDNX`)^3. So, for `GRIDNX=400`, around 32GB
+memory will be allocated per MPI process.
    
 Instructions:
+=============
 1. Compilation using gcc and default run using four MPI processes:
-   $ mpicc -O3 sslabs_hpc_benchmark.c -o benchmark
-   $ mpirun -np 4 ./benchmark
+```
+$ mpicc -O3 sslabs_hpc_benchmark.c -o benchmark
+$ mpirun -np 4 ./benchmark
+```
 2. Using 400 points along each axis and 4 MPI processes:
-   $ mpicc -O3 sslabs_hpc_benchmark.c -o benchmark -DGRIDNX=400
-   $ mpirun -np 4 ./benchmark
+```
+$ mpicc -O3 sslabs_hpc_benchmark.c -o benchmark -DGRIDNX=400
+$ mpirun -np 4 ./benchmark
+```
