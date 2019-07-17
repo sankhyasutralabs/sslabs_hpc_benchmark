@@ -28,10 +28,10 @@ Walltime statistics are printed at the end of the tests for these kernels:
 The simulation time is the sum of times for Update+Sync+Scatter. The
 checkpoint time is the time for Write.
 
-**NOTE**: This code allocates around 4GB of memory by default for each MPI
+**NOTE**: This code allocates around 8GB of memory by default for each MPI
 process. To modify the memory allocated, please modify the `GRIDNX`
-parameter, whose default values is set to 200. Memory allocated
-increases in proportion to (`GRIDNX`)^3. So, for `GRIDNX=400`, around 32GB
+parameter, whose default values is set to 400. Memory allocated
+increases in proportion to (`GRIDNX`)^3. So, for `GRIDNX=800`, around 32GB
 memory will be allocated per MPI process.
    
 Instructions:
@@ -41,8 +41,8 @@ Instructions:
 $ mpicc -O3 sslabs_hpc_benchmark.c -o benchmark
 $ mpirun -np 4 ./benchmark
 ```
-2. Using 400 points along each axis and 4 MPI processes:
+2. Using 800 points along each axis and 4 MPI processes:
 ```
-$ mpicc -O3 sslabs_hpc_benchmark.c -o benchmark -DGRIDNX=400
+$ mpicc -O3 sslabs_hpc_benchmark.c -o benchmark -DGRIDNX=800
 $ mpirun -np 4 ./benchmark
 ```
