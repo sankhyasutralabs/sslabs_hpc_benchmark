@@ -30,16 +30,35 @@ Contact: sbhtta@sankhyasutralabs.com
 
 /*
 ===============================================================================
-Instructions:
+Description:
+This benchmark runs simulates a system represented as a 3D grid with a 4x4
+matrix at each point of the grid. The grid is domain decomposed across MPI
+processes arranged in a 3D Cartesian MPI topology. The matrices on the grid
+are initialized to certain values at the start of a simulation run and at
+processed for a given number of steps before being written into binary files.
+At each step of the run, the following kernels are used:
+a) update : the matrix at each grid point is updated using the values of it's
+   own elements
+b) sync   : the matrices on the layer of points at each face of the grid
+   portion belonging to an MPI process are copied onto the layer of padding
+   points on the grid portion adjacent to that face; since each MPI process
+   contains one portion of the grid, this copy to neighboring grid portions
+   residing on other MPI processes is done via MPI send and receive calls.
+c) scatter: elements of the matrix at each grid point is moved to the same
+   element at a neighboring point on the same grid
 
-1. Compilation using gcc and run:
+Instructions:
+1. Compilation using gcc and default run using four MPI processes:
+   $ mpicc -O3 sslabs_hpc_benchmark.c -o benchmark
+   $ mpirun -np 4 ./benchmark
+
+2. Using 400 points along each axis and 4 MPI processes:
    $ mpicc -O3 sslabs_hpc_benchmark.c -o benchmark
    $ mpirun -np 4 ./benchmark
 ===============================================================================
 */
 
-// number of points along each axis
-// in the grid for one MPI process
+// number of points along each axis of grid portion belonging to 1 MPI process
 // should be two or more
 #ifndef GRIDNX
   #define GRIDNX 200
@@ -53,30 +72,32 @@ Instructions:
   #define GRIDNZ GRIDNX
 #endif
 
-// should be floating point
+// if you change this type, change MPI_VAR_TYPE as well
 #ifndef VAR_TYPE
   #define VAR_TYPE double
 #endif
 
+// if you change this type, change VAR_TYPE as well
 #ifndef MPI_VAR_TYPE
   #define MPI_VAR_TYPE MPI_DOUBLE
 #endif
 
-// should be two or more
 #ifndef NTIMES
   #define NTIMES 10
 #endif
 
-// should be two or more
 #ifndef MEMALIGN
   #define MEMALIGN 4096
 #endif
 
 #ifndef NSTEPS
-  #define NSTEPS 1
+  #define NSTEPS 200
 #endif
 
-#define HLINE "-------------------------------------------------------------\n"
+// uncomment below to skip read-write IO tests
+//#define NO_IO_TEST
+
+#define HLINE "--------------------------------------------------------------------------\n"
 
 #ifndef MIN
   #define MIN(x,y) ((x)<(y)?(x):(y))
@@ -94,26 +115,20 @@ Instructions:
 #define WS       1./9.
 #define WB       1./72.
 #define ITHETA   3.
+#define U0       0.04
 #define BETA2    1.
 #define NROWS    4
 #define NCOLS    4
 #define NVARS    NROWS*NCOLS
 #define NSTATS   4
-#define NKERNELS 3
+#define NKERNELS 5
 
-static char*  label[NKERNELS]   = {"Compute:   ",
-                                   "Sync:      ",
-                                   "Move:      "};
-static double mem_ops[NKERNELS] = {3, 1, 2};
+// info for kernels
+static double times[NKERNELS][NTIMES];
 static double avgtime[NKERNELS] = {0};
 static double maxtime[NKERNELS] = {0};
-static double mintime[NKERNELS] = {FLT_MAX, FLT_MAX, FLT_MAX};
-static size_t kernel_bytes[NKERNELS] =
-  {
-    sizeof(VAR_TYPE) * NVARS * GRIDNX * GRIDNY * GRIDNZ,
-    sizeof(VAR_TYPE) * NVARS * (2 * (GRIDNXY + GRIDNXZ + GRIDNYZ) + 8 * (GRIDNX + GRIDNY + GRIDNZ) + 24),
-    sizeof(VAR_TYPE) * NVARS * GRIDNX * GRIDNY * GRIDNZ,
-  };
+static double mintime[NKERNELS] = {FLT_MAX, FLT_MAX, FLT_MAX, FLT_MAX, FLT_MAX};
+static char*  label[NKERNELS]   = {"Update  ", "Sync    ", "Scatter ", "Write   ", "Read    "};
 
 // computation coefficients
 static VAR_TYPE w[NVARS]  = { W0, WS, WS, WS, WB, WB, WB, WB, 0., WS, WS, WS, WB, WB, WB, WB};
@@ -121,209 +136,294 @@ static VAR_TYPE c1[NVARS] = { 0.,+1., 0., 0.,-1.,+1.,-1.,+1., 0.,-1., 0., 0.,-1.
 static VAR_TYPE c2[NVARS] = { 0., 0.,+1., 0.,-1.,-1.,+1.,+1., 0., 0.,-1., 0.,-1.,-1.,+1.,+1.};
 static VAR_TYPE c3[NVARS] = { 0., 0., 0.,+1.,-1.,-1.,-1.,-1., 0., 0., 0.,-1.,+1.,+1.,+1.,+1.};
 
-void mpi_nprocs_from_args(int*, int, char**);
-void initialize_grid_vars(const int, VAR_TYPE*);
-void recompute_grid_vars(VAR_TYPE*);
-void mpi_copy_faces_to_pads(MPI_Comm, VAR_TYPE*, VAR_TYPE*, VAR_TYPE*, VAR_TYPE*, VAR_TYPE*);
-void stream_grid_vars(VAR_TYPE*);
-void verify_results(VAR_TYPE*);
+void get_nprocs_from_args(int*, int, char**);
+void check_grid_parameters(const int);
+void print_summary(MPI_Comm, const size_t, const size_t);
+void print_timings(const int);
+void initialize(MPI_Comm, VAR_TYPE*);
+void verify(MPI_Comm, VAR_TYPE*);
+void update(VAR_TYPE*);
+void sync(MPI_Comm, VAR_TYPE*, VAR_TYPE*, VAR_TYPE*, VAR_TYPE*, VAR_TYPE*);
+void scatter(VAR_TYPE*);
+void write_grid(const int, VAR_TYPE*);
+void read_grid(const int, VAR_TYPE*);
 
 int
 main(int argc, char** argv)
 {
-  // initialize MPI
   MPI_Init(&argc, &argv);
-  int num_mpi_ranks, mpi_rank;
-  MPI_Comm_size(MPI_COMM_WORLD, &num_mpi_ranks);
-  MPI_Comm_rank(MPI_COMM_WORLD, &mpi_rank);
 
-  // get MPI process breakup from command line arguments
-  int mpi_nprocs[DIM];
-  mpi_nprocs_from_args(mpi_nprocs, argc, argv);
-
-  // create MPI Cartesian topology
+  // from command line arguments, get the arrangement of
+  // MPI processes and create 3D Cartesian MPI topology
   MPI_Comm comm;
-  int mpi_coords[DIM];
+  int rank;
+  int nprocs[DIM];
   int periodic[DIM] = {1, 1, 1};
-  MPI_Cart_create(MPI_COMM_WORLD, DIM, mpi_nprocs, periodic, 1, &comm);
+  get_nprocs_from_args(nprocs, argc, argv);
+  MPI_Cart_create(MPI_COMM_WORLD, DIM, nprocs, periodic, 1, &comm);
+  MPI_Comm_rank(comm, &rank);
+
+  check_grid_parameters(rank);
+
+  // allocate aligned memory for a padded grid of variables with
+  // one extra padding point on either side of the grid along each axis
+  const int num_padded_pts = (GRIDNX + 2) * (GRIDNY + 2) * (GRIDNZ + 2);
+  const int num_padded_vars = NVARS * num_padded_pts;
+  const size_t grid_bytes = sizeof(VAR_TYPE) * num_padded_vars;
+  const size_t moffset = MEMALIGN - 1;
+  VAR_TYPE* ua_grid = (VAR_TYPE*)malloc(grid_bytes + moffset);
+  VAR_TYPE* grid = (VAR_TYPE*)(((unsigned long)ua_grid + moffset) & ~moffset);
+
+  // calculate size of buffers for transfer data from each
+  // face of the grid and allocate memory for each buffer
+  const int size_x   = NVARS * (GRIDNY + 2) * (GRIDNZ + 2);
+  const int size_y   = NVARS * (GRIDNX + 2) * (GRIDNZ + 2);
+  const int size_z   = NVARS * (GRIDNX + 2) * (GRIDNY + 2);
+  const int max_size = MAX(size_x, MAX(size_y, size_z));
+  const size_t buffer_bytes = sizeof(VAR_TYPE) * max_size;
+  VAR_TYPE* send_neg = (VAR_TYPE*)malloc(buffer_bytes);
+  VAR_TYPE* send_pos = (VAR_TYPE*)malloc(buffer_bytes);
+  VAR_TYPE* recv_neg = (VAR_TYPE*)malloc(buffer_bytes);
+  VAR_TYPE* recv_pos = (VAR_TYPE*)malloc(buffer_bytes);
+
+  for (int k = 0; k < NKERNELS; k++) {
+    for (int t = 0; t < NTIMES; t++) {
+      times[k][t] = 0;
+    }
+  }
+
+  print_summary(comm, grid_bytes, buffer_bytes);
+
+  // main loop
+  double seconds;
+  for (size_t t = 0; t < NTIMES; t++) {
+
+    initialize(comm, grid);
+
+    for (int step = 0; step < NSTEPS; step++) {
+      seconds = MPI_Wtime();
+      MPI_Barrier(MPI_COMM_WORLD);
+      update(grid);
+      MPI_Barrier(MPI_COMM_WORLD);
+      times[0][t] += MPI_Wtime() - seconds;
+
+      seconds = MPI_Wtime();
+      MPI_Barrier(MPI_COMM_WORLD);
+      sync(comm, grid, send_neg, send_pos, recv_neg, recv_pos);
+      MPI_Barrier(MPI_COMM_WORLD);
+      times[1][t] += MPI_Wtime() - seconds;
+
+      seconds = MPI_Wtime();
+      MPI_Barrier(MPI_COMM_WORLD);
+      scatter(grid);
+      MPI_Barrier(MPI_COMM_WORLD);
+      times[2][t] += MPI_Wtime() - seconds;
+    }
+
+    seconds = MPI_Wtime();
+    MPI_Barrier(MPI_COMM_WORLD);
+    #ifndef NO_IO_TEST
+    write_grid(rank, grid);
+    #endif
+    MPI_Barrier(MPI_COMM_WORLD);
+    times[3][t] += MPI_Wtime() - seconds;
+
+    seconds = MPI_Wtime();
+    MPI_Barrier(MPI_COMM_WORLD);
+    #ifndef NO_IO_TEST
+    read_grid(rank, grid);
+    #endif
+    MPI_Barrier(MPI_COMM_WORLD);
+    times[4][t] += MPI_Wtime() - seconds;
+
+    verify(comm, grid);
+  }
+
+  print_timings(rank);
+
+  free(send_neg);
+  free(send_pos);
+  free(recv_neg);
+  free(recv_pos);
+  free(ua_grid);
+  MPI_Finalize();
+  return 0;
+}
+
+// ======================= Definitions of functions ===========================
+
+// parse command line arguments to obtain the arrangement of
+// MPI processes in 3D Cartesian topology
+// by default, all processes are arranged in a line along the
+// x-axis
+void
+get_nprocs_from_args(int* nprocs, int argc, char** argv)
+{
+  int rank;
+  int num_ranks;
+  MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+  MPI_Comm_size(MPI_COMM_WORLD, &num_ranks);
+  // sanity check for arguments
+  if (argc > 1 && argc < 4) {
+    if (rank == 0) {
+      printf("Error : Detected only %d command line arguments\n", argc - 1);
+      printf("Please provide THREE integer arguments specifying the number\n");
+      printf("of MPI processes along each axis of 3D Cartesian topology\n");
+    }
+    MPI_Abort(MPI_COMM_WORLD, 2);
+    exit(1);
+  }
+  // default configuration
+  nprocs[0] = num_ranks;
+  nprocs[1] = 1;
+  nprocs[2] = 1;
+  // parsed configuration
+  if (argc > 1) {
+    nprocs[0] = atoi(argv[1]);
+    nprocs[1] = atoi(argv[2]);
+    nprocs[2] = atoi(argv[3]);
+  }
+  if (nprocs[0] * nprocs[1] * nprocs[2] != num_ranks) {
+    if (rank == 0) {
+      printf("Error : Given 3D arrangement of MPI processes ");
+      printf("(%d,%d,%d)\n", nprocs[0], nprocs[1], nprocs[2]);
+      printf("doesn't give a total of %d MPI processes.\n", num_ranks);
+    }
+    MPI_Abort(MPI_COMM_WORLD, 2);
+    exit(1);
+  }
+  return;
+}
+
+void
+check_grid_parameters(const int rank)
+{
+  if (GRIDNX < 2 || GRIDNY < 2 || GRIDNZ < 2) {
+    if (rank == 0) {
+      printf("Error : Please use two or more grid points along each axis\n");
+    }
+    MPI_Abort(MPI_COMM_WORLD, 2);
+    exit(1);
+  }
+  if (NTIMES < 2) {
+    if (rank == 0) {
+      printf("Error : Please use NTIMES >= 2 for getting walltime statistics\n");
+    }
+    MPI_Abort(MPI_COMM_WORLD, 2);
+    exit(1);
+  }
+  if (NSTEPS < 1) {
+    if (rank == 0) {
+      printf("Error : Please use NSTEPS >= 1 for a valid simulation run\n");
+    }
+    MPI_Abort(MPI_COMM_WORLD, 2);
+    exit(1);
+  }
+  return;
+}
+
+// print parameters completely specifying the grid, buffers and MPI topology
+void
+print_summary(MPI_Comm comm, const size_t grid_bytes, const size_t buffer_bytes)
+{
+  int mpi_rank;
+  int np;
+  int n[DIM];
+  int periodic[DIM];
+  int mpi_coords[DIM];
   MPI_Comm_rank(comm, &mpi_rank);
-  MPI_Cart_coords(comm, mpi_rank, DIM, mpi_coords);
-
-  // allocate aligned memory for grid of elements
-  const int num_padded_vars = NVARS * (GRIDNX + 2) * (GRIDNY + 2) * (GRIDNZ + 2);
-  const size_t alloc_grid_bytes = sizeof(VAR_TYPE) * num_padded_vars;
-  const size_t memoffset = MEMALIGN - 1;
-  VAR_TYPE* grid_unaligned = (VAR_TYPE*)malloc(alloc_grid_bytes + memoffset);
-  VAR_TYPE* grid = (VAR_TYPE*)(((unsigned long)grid_unaligned + memoffset) & ~memoffset);
-
-  // buffer sizes
-  const int buffer_size_x = NVARS * (GRIDNY + 2) * (GRIDNZ + 2);
-  const int buffer_size_y = NVARS * (GRIDNX + 2) * (GRIDNZ + 2);
-  const int buffer_size_z = NVARS * (GRIDNX + 2) * (GRIDNY + 2);
-
-  // allocate memory for send and receive buffers
-  const int max_buffer_size = MAX(buffer_size_x, MAX(buffer_size_y, buffer_size_z));
-  const size_t alloc_buffer_bytes = sizeof(VAR_TYPE) * max_buffer_size;
-  VAR_TYPE* send_neg_buffer = (VAR_TYPE*)malloc(alloc_buffer_bytes);
-  VAR_TYPE* send_pos_buffer = (VAR_TYPE*)malloc(alloc_buffer_bytes);
-  VAR_TYPE* recv_neg_buffer = (VAR_TYPE*)malloc(alloc_buffer_bytes);
-  VAR_TYPE* recv_pos_buffer = (VAR_TYPE*)malloc(alloc_buffer_bytes);
-
-  // print pre-test summary
+  MPI_Comm_size(MPI_COMM_WORLD, &np);
+  MPI_Cart_get(comm, DIM, n, periodic, mpi_coords);
   if (mpi_rank == 0) {
     printf(HLINE);
     printf("SSLABS HPC Benchmark\n");
     printf("Copyright (C) 2019 SankhyaSutra Labs Pvt. Ltd.\n");
     printf(HLINE);
-    int bytes_per_word = sizeof(VAR_TYPE);
     printf("This test uses:\n");
-    printf("* %d bytes per variable\n", bytes_per_word);
-    printf("* %d variables per grid point\n", NVARS);
-    printf("* %d x %d x %d points per grid\n", GRIDNX, GRIDNY, GRIDNZ);
-    printf("* %.2f GB data allocated per grid\n", 1.0E-9 * alloc_grid_bytes);
-    printf("* %.2f GB data allocated per buffer\n", 1.0E-9 * alloc_buffer_bytes);
-    printf("* two send buffers and two recv buffers per grid\n");
-    printf("* one grid per MPI process\n");
-    printf("* %d MPI processes in total\n", num_mpi_ranks);
-    printf("* %.2f GB data allocated in total\n", num_mpi_ranks * 1.0E-9 *
-                                                  (alloc_grid_bytes + 4 * alloc_buffer_bytes));
-  }
-
-  // main loop, run each kernel NTIMES
-  double times[NKERNELS][NTIMES];
-  for (size_t t = 0; t < NTIMES; t++) {
-
-    // initialize elements at each grid point
-    initialize_grid_vars(mpi_rank,grid);
-
-    // local compute
-    times[0][t] = MPI_Wtime();
-    MPI_Barrier(MPI_COMM_WORLD);
-    recompute_grid_vars(grid);
-    MPI_Barrier(MPI_COMM_WORLD);
-    times[0][t] = MPI_Wtime() - times[0][t];
-
-    // synchronize variables on pads using MPI communication
-    times[1][t] = MPI_Wtime();
-    MPI_Barrier(MPI_COMM_WORLD);
-    mpi_copy_faces_to_pads(comm, grid, send_neg_buffer, send_pos_buffer, recv_neg_buffer, recv_pos_buffer);
-    MPI_Barrier(MPI_COMM_WORLD);
-    times[1][t] = MPI_Wtime() - times[1][t];
-
-    // data movement across neighbor points
-    times[2][t] = MPI_Wtime();
-    MPI_Barrier(MPI_COMM_WORLD);
-    stream_grid_vars(grid);
-    MPI_Barrier(MPI_COMM_WORLD);
-    times[2][t] = MPI_Wtime() - times[2][t];
-
-  } // ends t loop
-
-  // verify output
-  verify_results(grid);
-
-  // statistics for timings
-  // ignore timing for the first iteration
-  // timing for each kernel is assumed to be similar across each process
-  // since MPI Barrier is called just before and after the kernels
-  if (mpi_rank == 0) {
-    for (int k = 0; k < NKERNELS; k++) {
-      for (int t = 1; t < NTIMES; t++) {
-        avgtime[k] = avgtime[k] + times[k][t];
-        mintime[k] = MIN(mintime[k], times[k][t]);
-        maxtime[k] = MAX(maxtime[k], times[k][t]);
-      }
-      avgtime[k] = avgtime[k]/(double)(NTIMES-1);
-    }
-  }
-
-  // print summary of timing statistics
-  if (mpi_rank == 0) {
+    printf("(a) %d bytes per variable\n", (int)sizeof(VAR_TYPE));
+    printf("(b) %d x %d = %d variables per matrix\n", NROWS, NCOLS, NVARS);
+    printf("(c) 1 matrix per grid point\n");
+    printf("(d) %d x %d x %d points per grid portion\n", GRIDNX, GRIDNY, GRIDNZ);
+    printf("(e) %d variables per grid portion\n", (NVARS * GRIDNX * GRIDNY * GRIDNZ));
+    printf("(f) 1 extra layer of padding points beside each face of a grid portion\n");
+    printf("(g) %.2f GB data allocated per padded grid portion\n", 1.0E-9 * grid_bytes);
+    printf("(h) %.2f GB data allocated per buffer\n", 1.0E-9 * buffer_bytes);
+    printf("(i) two send buffers and two recv buffers per grid portion\n");
+    printf("(j) one grid portion per MPI process\n");
+    printf("(k) %d x %d x %d = %d MPI processes in total\n", n[0], n[1], n[2], np);
+    printf("(l) %.2f GB data allocated for padded grid\n", 1.0E-9 * np * grid_bytes);
+    printf("(m) %.2f GB data allocated in total (padded grid + buffers)\n", 1.0E-9 * np * (grid_bytes + 4 * buffer_bytes));
+    printf("(n) %d simulation steps in a run\n", NSTEPS);
+    printf("(o) %d runs for generating walltime statistics\n", NTIMES);
     printf(HLINE);
-    printf("Kernel      Best Rate MB/s  Avg time     Min time     Max time\n");
-    printf(HLINE);
-    for (int k = 0; k < NKERNELS; k++) {
-      printf("%s%11.1f  %11.6f  %11.6f  %11.6f\n", label[k],
-        1.0E-06 * mem_ops[k] * num_mpi_ranks * kernel_bytes[k] / mintime[k],
-        avgtime[k],
-        mintime[k],
-        maxtime[k]);
-    }
-    printf(HLINE);
-  }
-
-  free(send_neg_buffer);
-  free(send_pos_buffer);
-  free(recv_neg_buffer);
-  free(recv_pos_buffer);
-  free(grid_unaligned);
-  MPI_Finalize();
-  return 0;
-}
-
-// parse arguments to get 3D distribution of MPI processors
-// ========================================================
-void
-mpi_nprocs_from_args(int* mpi_nprocs, int argc, char** argv)
-{
-  int num_mpi_ranks;
-  MPI_Comm_size(MPI_COMM_WORLD, &num_mpi_ranks);
-  mpi_nprocs[0] = num_mpi_ranks;
-  mpi_nprocs[1] = 1;
-  mpi_nprocs[2] = 1;
-  if (argc > 1) {
-    if (argc < 4) {
-      printf("Provide arguments: npx npy npz");
-      MPI_Abort(MPI_COMM_WORLD, 2);
-      exit(1);
-    }
-    mpi_nprocs[0] = atoi(argv[1]);
-    mpi_nprocs[1] = atoi(argv[2]);
-    mpi_nprocs[2] = atoi(argv[3]);
-    if (mpi_nprocs[0] * mpi_nprocs[1] * mpi_nprocs[2] != num_mpi_ranks) {
-      printf("Given MPI ranks don't add up to : npx * npy * npz");
-      MPI_Abort(MPI_COMM_WORLD, 2);
-      exit(1);
-    }
   }
   return;
 }
 
-// flat index of element (r,c) of the matrix at grid point (x,y,z)
-inline int
+// print walltime statistics for each kernel
+// ignore timing for the first run while calculating statistics
+// timing for each kernel is assumed to be similar across each process
+// since MPI Barrier is called just before and after each kernel
+void
+print_timings(const int rank)
+{
+  for (int k = 0; k < NKERNELS; k++) {
+    for (int t = 1; t < NTIMES; t++) {
+      avgtime[k] = avgtime[k] + times[k][t];
+      mintime[k] = MIN(mintime[k], times[k][t]);
+      maxtime[k] = MAX(maxtime[k], times[k][t]);
+    }
+    avgtime[k] = avgtime[k] / (NTIMES - 1.);
+  }
+
+  if (rank == 0) {
+    printf(HLINE);
+    printf("Kernel     Avg time     Min time     Max time\n");
+    printf(HLINE);
+    for (int k = 0; k < NKERNELS; k++) {
+      printf("%s%11.6f  %11.6f  %11.6f\n",
+        label[k], avgtime[k], mintime[k], maxtime[k]);
+    }
+    printf(HLINE);
+  }
+  return;
+}
+
+// flat index of variable (r,c) in the matrix at grid point (x,y,z)
+static inline int
 idx(const int r, const int c, const int x, const int y, const int z)
 { return c + NCOLS * (x + (GRIDNX + 2) * (y + (GRIDNY + 2) * (z + (GRIDNZ + 2) * r))); }
 
-inline void
-copy_vars_from_grid_point(const VAR_TYPE* grid, const int x, const int y, const int z, VAR_TYPE* var)
+static inline void
+copy_matrix_from_grid_point(const VAR_TYPE* grid, const int x, const int y, const int z, VAR_TYPE* m)
 {
   for (int r = 0; r < NROWS; r++) {
-    memcpy(&var[r*NCOLS], &grid[idx(r,0,x,y,z)], NCOLS * sizeof(VAR_TYPE));
-  }
-  return;
-}
-
-inline void
-copy_vars_to_grid_point(VAR_TYPE* grid, const int x, const int y, const int z, VAR_TYPE* var)
-{
-  for (int r = 0; r < NROWS; r++) {
-    memcpy(&grid[idx(r,0,x,y,z)], &var[r*NCOLS], NCOLS * sizeof(VAR_TYPE));
+    memcpy(&m[r*NCOLS], &grid[idx(r,0,x,y,z)], NCOLS * sizeof(VAR_TYPE));
   }
   return;
 }
 
 static inline void
-vars_to_stats(const VAR_TYPE* var, VAR_TYPE* s)
+copy_matrix_to_grid_point(VAR_TYPE* grid, const int x, const int y, const int z, VAR_TYPE* m)
+{
+  for (int r = 0; r < NROWS; r++) {
+    memcpy(&grid[idx(r,0,x,y,z)], &m[r*NCOLS], NCOLS * sizeof(VAR_TYPE));
+  }
+  return;
+}
+
+static inline void
+matrix_to_stats(const VAR_TYPE* m, VAR_TYPE* s)
 {
   s[0] = 0.;
   s[1] = 0.;
   s[2] = 0.;
   s[3] = 0.;
   for (int v = 0; v < NVARS; v++) {
-    s[0] += var[v];
-    s[1] += var[v] * c1[v];
-    s[2] += var[v] * c2[v];
-    s[3] += var[v] * c3[v];
+    s[0] += m[v];
+    s[1] += m[v] * c1[v];
+    s[2] += m[v] * c2[v];
+    s[3] += m[v] * c3[v];
   }
   const VAR_TYPE invs0 = 1. / s[0];
   s[1] *= invs0;
@@ -333,66 +433,73 @@ vars_to_stats(const VAR_TYPE* var, VAR_TYPE* s)
 }
 
 static inline void
-stats_to_vars(const VAR_TYPE* s, VAR_TYPE* var)
+stats_to_matrix(const VAR_TYPE* s, VAR_TYPE* m)
 {
   const VAR_TYPE sdots = (s[1]*s[1] + s[2]*s[2] + s[3]*s[3]) * ITHETA;
   for (int v = 0; v < NVARS; v++) {
     const VAR_TYPE cdots = (c1[v]*s[1] + c2[v]*s[2] + c3[v]*s[3]) * ITHETA;
     const VAR_TYPE coeff = 1 + cdots - 0.5 * sdots + 0.5 * cdots * cdots;
-    var[v] = coeff * s[0] * w[v];
+    m[v] = coeff * s[0] * w[v];
   }
   return;
 }
 
 static inline void
-update_vars(VAR_TYPE* var)
+update_matrix(VAR_TYPE* m)
 {
-  static VAR_TYPE tmpvar[NVARS];
+  static VAR_TYPE tmp_matrix[NVARS];
   static VAR_TYPE s[NSTATS];
-  vars_to_stats(var, s);
-  stats_to_vars(s, tmpvar);
+  matrix_to_stats(m, s);
+  stats_to_matrix(s, tmp_matrix);
   for (int v = 0; v < NVARS; v++) {
-    var[v] += BETA2 * (tmpvar[v] - var[v]);
+    m[v] += BETA2 * (tmp_matrix[v] - m[v]);
   }
   return;
 }
 
-// initialize variables
-// ====================
 void
-initialize_grid_vars(const int mpi_rank, VAR_TYPE* grid)
+initialize(MPI_Comm comm, VAR_TYPE* grid)
 {
-  VAR_TYPE tmpvar[NVARS];
-  VAR_TYPE s[NSTATS] = {1.,0.,0.,0.};
+  int mpi_nprocs[DIM];
+  int periodic[DIM];
+  int mpi_coords[DIM];
+  MPI_Cart_get(comm, DIM, mpi_nprocs, periodic, mpi_coords);
+
+  VAR_TYPE m[NVARS];
+  VAR_TYPE s[NSTATS] = {0.};
   for (int z = 1; z <= GRIDNZ; z++)
   for (int y = 1; y <= GRIDNY; y++)
   for (int x = 1; x <= GRIDNX; x++)
   {
-    stats_to_vars(s, tmpvar);
-    copy_vars_to_grid_point(grid, x, y, z, tmpvar);
+    //const VAR_TYPE xc = 2. * M_PI * (x + mpi_coords[0] * GRIDNX) / (1. * mpi_nprocs[0] * GRIDNX);
+    //const VAR_TYPE yc = 2. * M_PI * (y + mpi_coords[1] * GRIDNY) / (1. * mpi_nprocs[1] * GRIDNY);
+    //const VAR_TYPE zc = 2. * M_PI * (z + mpi_coords[2] * GRIDNZ) / (1. * mpi_nprocs[2] * GRIDNZ);
+    s[0] = 1.;
+    s[1] = 0;//U0 * sin(xc) * (cos(3. * yc) * cos(zc) - cos(yc) * cos(3. * zc));
+    s[2] = 0;//U0 * sin(yc) * (cos(3. * zc) * cos(xc) - cos(zc) * cos(3. * xc));
+    s[3] = 0;//U0 * sin(zc) * (cos(3. * xc) * cos(yc) - cos(xc) * cos(3. * yc));
+    stats_to_matrix(s, m);
+    copy_matrix_to_grid_point(grid, x, y, z, m);
   }
   return;
 }
 
-// update variables
-// ================
 void
-recompute_grid_vars(VAR_TYPE* grid)
+update(VAR_TYPE* grid)
 {
-  VAR_TYPE tmpvar[NVARS];
+  VAR_TYPE m[NVARS];
   for (int z = 1; z <= GRIDNZ; z++)
   for (int y = 1; y <= GRIDNY; y++)
   for (int x = 1; x <= GRIDNX; x++)
   {
-    copy_vars_from_grid_point(grid, x, y, z, tmpvar);
-    update_vars(tmpvar);
-    copy_vars_to_grid_point(grid, x, y, z, tmpvar);
+    copy_matrix_from_grid_point(grid, x, y, z, m);
+    update_matrix(m);
+    copy_matrix_to_grid_point(grid, x, y, z, m);
   }
   return;
 }
 
-// copy faces to pads
-// ==================
+// functions for the sync kernel
 void
 pack_x_face_vars_to_buffer(const int side, const VAR_TYPE* grid, VAR_TYPE* buffer)
 {
@@ -536,12 +643,12 @@ mpi_copy_faces_to_pads_along_axis(MPI_Comm comm,
 }
 
 void
-mpi_copy_faces_to_pads(MPI_Comm comm,
-                       VAR_TYPE* grid,
-                       VAR_TYPE* send_neg_buffer,
-                       VAR_TYPE* send_pos_buffer,
-                       VAR_TYPE* recv_neg_buffer,
-                       VAR_TYPE* recv_pos_buffer)
+sync(MPI_Comm comm,
+     VAR_TYPE* grid,
+     VAR_TYPE* send_neg_buffer,
+     VAR_TYPE* send_pos_buffer,
+     VAR_TYPE* recv_neg_buffer,
+     VAR_TYPE* recv_pos_buffer)
 {
   const int buffer_size_x = NVARS * (GRIDNY + 2) * (GRIDNZ + 2);
   const int buffer_size_y = NVARS * (GRIDNX + 2) * (GRIDNZ + 2);
@@ -552,10 +659,8 @@ mpi_copy_faces_to_pads(MPI_Comm comm,
   return;
 }
 
-// stream variables
-// ================
 void
-stream_grid_vars(VAR_TYPE* grid)
+scatter(VAR_TYPE* grid)
 {
   for (int z = 1; z <= GRIDNZ; z++)
   for (int y = 1; y <= GRIDNY; y++)
@@ -597,23 +702,67 @@ stream_grid_vars(VAR_TYPE* grid)
 }
 
 void
-verify_results(VAR_TYPE* grid)
+write_grid(const int mpi_rank, VAR_TYPE* grid)
+{
+  char fname[50];
+  sprintf(fname, "grid_%d.bin", mpi_rank);
+  FILE *fptr = fopen(fname, "wb");
+  if (fptr == NULL) {
+    printf("Could not open file %s for write\n", fname);
+    MPI_Abort(MPI_COMM_WORLD, 2);
+    exit(1);
+  }
+  const int num = NVARS * (GRIDNX + 2) * (GRIDNY + 2) * (GRIDNZ + 2);
+  size_t ret_code = fwrite(grid, sizeof(VAR_TYPE), num, fptr);
+  if (ret_code != num) {
+    printf("Error writing file %s\n", fname);
+    MPI_Abort(MPI_COMM_WORLD, 2);
+    exit(1);
+  }
+  fclose(fptr);
+  return;
+}
+
+void
+read_grid(const int mpi_rank, VAR_TYPE* grid)
+{
+  char fname[50];
+  sprintf(fname, "grid_%d.bin", mpi_rank);
+  FILE *fptr = fopen(fname, "rb");
+  if (fptr == NULL) {
+    printf("Could not open file %s for read\n", fname);
+    MPI_Abort(MPI_COMM_WORLD, 2);
+    exit(1);
+  }
+  const int num = NVARS * (GRIDNX + 2) * (GRIDNY + 2) * (GRIDNZ + 2);
+  size_t ret_code = fread(grid, sizeof(VAR_TYPE), num, fptr);
+  if (ret_code != num) {
+    printf("Error reading file %s\n", fname);
+    MPI_Abort(MPI_COMM_WORLD, 2);
+    exit(1);
+  }
+  fclose(fptr);
+  return;
+}
+
+void
+verify(MPI_Comm comm, VAR_TYPE* grid)
 {
   for (int z = 1; z <= GRIDNZ; z++)
   for (int y = 1; y <= GRIDNY; y++)
   for (int x = 1; x <= GRIDNX; x++)
   {
-    VAR_TYPE tmpvar[NVARS] = {0};
+    VAR_TYPE m[NVARS] = {0};
     VAR_TYPE s[NSTATS] = {-99.,-99.,-99.,-99.};
-    copy_vars_from_grid_point(grid,x,y,z,tmpvar);
-    vars_to_stats(tmpvar, s);
+    copy_matrix_from_grid_point(grid,x,y,z,m);
+    matrix_to_stats(m, s);
     int found_error = 0;
     if (fabs(s[0] - 1.0) > 1.0E-6) found_error = 1;
     if (fabs(s[1] - 0.0) > 1.0E-6) found_error = 1;
     if (fabs(s[2] - 0.0) > 1.0E-6) found_error = 1;
     if (fabs(s[3] - 0.0) > 1.0E-6) found_error = 1;
     if (found_error == 1) {
-      printf("Error found during verification of results.");
+      printf("Error found during verification of results.\n");
       MPI_Abort(MPI_COMM_WORLD, 2);
       exit(1);
     }
