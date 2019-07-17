@@ -29,7 +29,7 @@ Contact: sbhtta@sankhyasutralabs.com
 #include <stdlib.h>
 
 #ifndef GRIDNX
-  #define GRIDNX 200
+  #define GRIDNX 400
 #endif
 
 #ifndef GRIDNY
