@@ -8,15 +8,15 @@ processes arranged in a 3D Cartesian MPI topology. The matrices on the grid
 are initialized to certain values at the start of a simulation run and at
 processed for a given number of steps before being written into binary files.
 At each step of the run, the following kernels are used:
-a) update : the matrix at each grid point is updated using the values of it's
-   own elements
-b) sync   : the matrices on the layer of points at each face of the grid
-   portion belonging to an MPI process are copied onto the layer of padding
-   points on the grid portion adjacent to that face; since each MPI process
-   contains one portion of the grid, this copy to neighboring grid portions
-   residing on other MPI processes is done via MPI send and receive calls.
-c) scatter: elements of the matrix at each grid point is moved to the same
-   element at a neighboring point on the same grid
++ *update*: the matrix at each grid point is updated using the values of it's
+  own elements
++ *sync*: the matrices on the layer of points at each face of the grid
+  portion belonging to an MPI process are copied onto the layer of padding
+  points on the grid portion adjacent to that face; since each MPI process
+  contains one portion of the grid, this copy to neighboring grid portions
+  residing on other MPI processes is done via MPI send and receive calls.
++ *scatter*: elements of the matrix at each grid point is moved to the same
+  element at a neighboring point on the same grid
 
 Walltime statistics are printed at the end of the tests for these kernels:
 1. Update
