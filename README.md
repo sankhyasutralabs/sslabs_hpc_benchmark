@@ -5,7 +5,7 @@ Description:
 This benchmark runs simulates a system represented as a 3D grid with a 4x4
 matrix at each point of the grid. The grid is domain decomposed across MPI
 processes arranged in a 3D Cartesian MPI topology. The matrices on the grid
-are initialized to certain values at the start of a simulation run and at
+are initialized to certain values at the start of a simulation run and are
 processed for a given number of steps before being written into binary files.
 At each step of the run, the following kernels are used:
 + *update*: the matrix at each grid point is updated using the values of it's
