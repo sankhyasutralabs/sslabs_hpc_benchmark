@@ -28,15 +28,20 @@ Walltime statistics are printed at the end of the tests for these kernels:
 The simulation time is the sum of times for Update+Sync+Scatter. The
 checkpoint time is the time for Write.
 
-**NOTE**: This code allocates around 8GB of memory by default for each MPI
-process. To modify the memory allocated, please modify the `GRIDNX`
-parameter, whose default values is set to 400. Memory allocated
+Data Size:
+==========
+1. **Memory**: This code allocates around 8GB of memory by default for
+each MPI process. To modify the memory allocated, please modify the
+`GRIDNX` parameter, whose default values is set to 400. Memory allocated
 increases in proportion to (`GRIDNX`)^3. So, for `GRIDNX=800`, around 32GB
 memory will be allocated per MPI process.
-   
+2. **Storage**: This code writes the total data allocated in the MPI
+processes to binary files during the Write kernel and reads them back
+during the Read kernel.
+
 Instructions:
 =============
-1. Compilation using gcc and default run using four MPI processes:
+1. Compilation and default run using four MPI processes:
 ```
 $ mpicc -O3 sslabs_hpc_benchmark.c -o benchmark
 $ mpirun -np 4 ./benchmark
@@ -44,5 +49,16 @@ $ mpirun -np 4 ./benchmark
 2. Using 800 points along each axis and 4 MPI processes:
 ```
 $ mpicc -O3 sslabs_hpc_benchmark.c -o benchmark -DGRIDNX=800
+$ mpirun -np 4 ./benchmark
+```
+3. For a quick run simulating a small problem size, use 100 points
+along each axis and 10 simulation steps:
+```
+$ mpicc -O3 sslabs_hpc_benchmark.c -o benchmark -DGRIDNX=100 -DNSTEPS=10
+$ mpirun -np 4 ./benchmark
+```
+4. To turn off IO test, use the compilation flag `-DNO_IO_TEST`:
+```
+$ mpicc -O3 sslabs_hpc_benchmark.c -o benchmark -DNO_IO_TEST
 $ mpirun -np 4 ./benchmark
 ```
