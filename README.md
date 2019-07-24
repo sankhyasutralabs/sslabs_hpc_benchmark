@@ -1,6 +1,6 @@
 # SankhyaSutra Labs HPC Benchmark Suite
 
-Description:
+Description
 ============
 This benchmark runs simulates a system represented as a 3D grid with a 4x4
 matrix at each point of the grid. The grid is domain decomposed across MPI
@@ -15,8 +15,8 @@ At each step of the run, the following kernels are used:
   points on the grid portion adjacent to that face; since each MPI process
   contains one portion of the grid, this copy to neighboring grid portions
   residing on other MPI processes is done via MPI send and receive calls.
-+ *scatter*: elements of the matrix at each grid point is moved to the same
-  element at a neighboring point on the same grid
++ *scatter*: elements of the matrix at each grid point are moved to the
+  corresponding element at a neighboring point on the same grid portion
 
 Benchmark Timings
 =================
@@ -39,7 +39,7 @@ memory bandwidth is expected to be realized when using **N MPI processes**
 on that node. In some cases, the maximum bandwidth value can be saturated
 using fewer than N MPI processes on that node.
 
-Data Size:
+Data Size
 ==========
 1. **Memory**: This code allocates around **8GB of memory** by default for
 **each MPI process**. To modify the memory allocated, please modify the
@@ -50,7 +50,7 @@ memory will be allocated per MPI process.
 processes to binary files during the Write kernel and reads them back
 during the Read kernel.
 
-Instructions:
+Instructions
 =============
 1. Sample compilation and run using, for example, four MPI processes:
 ```
