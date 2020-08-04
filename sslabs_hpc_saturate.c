@@ -114,7 +114,7 @@ static VAR_TYPE c3[NVARS] = { 0., 0., 0.,+1.,-1.,-1.,-1.,-1., 0., 0., 0.,-1.,+1.
 
 void check_grid_parameters(const int);
 void print_summary(MPI_Comm, const size_t, const size_t);
-void print_timings_oneline(const int rank, const int t);
+void print_timings_oneline(const int rank, const int t, const double abs_seconds);
 void print_timings(const int);
 void initialize(MPI_Comm, VAR_TYPE*);
 void verify(MPI_Comm, VAR_TYPE*);
@@ -197,6 +197,7 @@ main(int argc, char** argv)
   print_summary(comm, grid_bytes, buffer_bytes);
 
   // main loop
+  double abs_start_time = MPI_Wtime();
   double seconds;
   for (size_t t = 0; t < NTIMES; t++) {
 
@@ -244,7 +245,7 @@ main(int argc, char** argv)
 
     verify(comm, grid);
 
-    print_timings_oneline(rank, t);
+    print_timings_oneline(rank, t, MPI_Wtime() - abs_start_time);
   }
 
   print_timings(rank);
@@ -328,10 +329,10 @@ print_summary(MPI_Comm comm, const size_t grid_bytes, const size_t buffer_bytes)
 }
 
 void
-print_timings_oneline(const int rank, const int t)
+print_timings_oneline(const int rank, const int t, const double abs_seconds)
 {
   if (rank == 0) {
-    printf("(%d)  ", t);
+    printf("(%d)  %11.3f s | ", t, abs_seconds);
     for (int k = 0; k < NKERNELS; k++) {
       printf("%11.6f  ", times[k][t]);
     }
