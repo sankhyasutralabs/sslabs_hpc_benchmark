@@ -41,10 +41,10 @@ using fewer than N MPI processes on that node.
 
 Data Size
 ==========
-1. **Memory**: This code allocates around **8GB of memory** by default for
+1. **Memory**: This code allocates around **8 GB of memory** by default for
 **each MPI process**. To modify the memory allocated, please modify the
-`GRIDNX` parameter, whose default values is set to 400. Memory allocated
-increases in proportion to (`GRIDNX`)^3. So, for `GRIDNX=800`, around 32GB
+`GRIDNX` parameter, whose default value is set to 400. Memory allocated
+increases in proportion to (`GRIDNX`)^3. So, for `GRIDNX=800`, around 64 GB
 memory will be allocated per MPI process.
 2. **Storage**: This code writes the total data allocated in the MPI
 processes to binary files during the Write kernel and reads them back
