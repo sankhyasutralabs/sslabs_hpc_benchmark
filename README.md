@@ -73,3 +73,66 @@ $ mpirun -np 4 ./benchmark
 $ mpicc -O3 sslabs_hpc_benchmark.c -o benchmark -DNO_IO_TEST
 $ mpirun -np 4 ./benchmark
 ```
+
+Sample Timings for a Quick Test
+===============================
+
+- using AMD AOCC 2.2 and MPICH 3.3
+- on a node with 2S EPYC 7742 and 16 x 32 GB 3.2 GHz DDR4 RAM
+- using a `200x200x200` grid block per process
+- 1 simulation step per sample
+- no IO test
+
+Compilation
+-----------
+
+```sh
+#!/bin/bash
+
+cc_macros="-DGRIDNX=200 -DNSTEPS=1 -DNO_IO_TEST"
+cc_flags="-std=c99 -DNDEBUG -O3 -mcmodel=large -mavx2 -march=znver2 -fnt-store=aggressive"
+MPICH_CC=clang mpicc $cc_flags sslabs_hpc_benchmark.c -o benchmark $cc_macros
+```
+
+Run
+---
+
+```
+mpirun -n 16 -bind-to core:8 ./benchmark
+```
+
+Output
+------
+
+```
+--------------------------------------------------------------------------
+SSLABS HPC Benchmark
+Copyright (C) 2019 SankhyaSutra Labs Pvt. Ltd.
+--------------------------------------------------------------------------
+This test uses:
+(a) 8 bytes per variable
+(b) 4 x 4 = 16 variables per matrix
+(c) 1 matrix per grid point
+(d) 200 x 200 x 200 points per grid portion
+(e) 128000000 variables per grid portion
+(f) 1 extra layer of padding points beside each face of a grid portion
+(g) 1.06 GB data allocated per padded grid portion
+(h) 0.01 GB data allocated per buffer
+(i) two send buffers and two recv buffers per grid portion
+(j) one grid portion per MPI process
+(k) 16 x 1 x 1 = 16 MPI processes in total
+(l) 16.88 GB data allocated for padded grid
+(m) 17.21 GB data allocated in total (padded grid + buffers)
+(n) 1 simulation steps in a run
+(o) 10 runs for generating walltime statistics
+--------------------------------------------------------------------------
+--------------------------------------------------------------------------
+Kernel     Avg time     Min time     Max time
+--------------------------------------------------------------------------
+Update     0.257627     0.255894     0.260912
+Sync       0.033473     0.032440     0.034372
+Scatter    0.119065     0.118899     0.119535
+Write      0.000028     0.000015     0.000045
+Read       0.000024     0.000015     0.000037
+--------------------------------------------------------------------------
+```
